@@ -64,7 +64,7 @@ delete_object_rest() {
 }
 
 delete_object_bypass_retention() {
-  if ! check_param_count "delete_object_bypass_retention" "client, bucket, key, user, password" 5 $#; then
+  if ! check_param_count "delete_object_bypass_retention" "bucket, key, user, password" 4 $#; then
     return 1
   fi
   if ! result=$(AWS_ACCESS_KEY_ID="$3" AWS_SECRET_ACCESS_KEY="$4" \
