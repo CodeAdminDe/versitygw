@@ -15,7 +15,6 @@
 package middlewares
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -34,35 +33,16 @@ func AuthorizePublicBucketAccess(be backend.Backend, l s3log.AuditLogger, mm *me
 			return ctx.Next()
 		}
 
-		if ctx.Method() != fiber.MethodGet && ctx.Method() != fiber.MethodHead {
-			//FIXME: fix the error type
-			return sendResponse(ctx, s3err.GetAPIError(s3err.ErrAccessDenied), l, mm)
-		}
-
 		bucket, object := parsePath(ctx.Path())
 
-		action, err := detectS3Action(ctx, object == "")
+		action, permission, err := detectS3Action(ctx, object == "")
 		if err != nil {
-			return sendResponse(ctx, s3err.GetAPIError(s3err.ErrAccessDenied), l, mm)
+			return sendResponse(ctx, err, l, mm)
 		}
 
-		policy, err := be.GetBucketPolicy(ctx.Context(), bucket)
+		err = auth.VerifyPublicAccess(ctx.Context(), be, action, permission, bucket, object)
 		if err != nil {
-			if !errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchBucketPolicy)) {
-				return sendResponse(ctx, err, l, mm)
-			}
-		} else {
-			err := auth.VerifyPublicBucketPolicy(policy, bucket, object, action)
-			if err == nil {
-				utils.ContextKeyPublicBucket.Set(ctx, true)
-				return ctx.Next()
-			}
-			return sendResponse(ctx, s3err.GetAPIError(s3err.ErrAccessDenied), l, mm)
-		}
-
-		err = auth.VerifyPublicBucketACL(ctx.Context(), be, bucket, action)
-		if err != nil {
-			return sendResponse(ctx, s3err.GetAPIError(s3err.ErrAccessDenied), l, mm)
+			return sendResponse(ctx, err, l, mm)
 		}
 
 		utils.ContextKeyPublicBucket.Set(ctx, true)
@@ -71,90 +51,221 @@ func AuthorizePublicBucketAccess(be backend.Backend, l s3log.AuditLogger, mm *me
 	}
 }
 
-func detectS3Action(ctx *fiber.Ctx, isBucketAction bool) (auth.Action, error) {
+func detectS3Action(ctx *fiber.Ctx, isBucketAction bool) (auth.Action, auth.Permission, error) {
 	path := ctx.Path()
 	// ListBuckets is not publically available
 	if path == "/" {
-		return "", s3err.GetAPIError(s3err.ErrAccessDenied)
-	}
-
-	if ctx.Method() == fiber.MethodHead {
-		// HeadBucket
-		if isBucketAction {
-			return auth.ListBucketAction, nil
-		}
-
-		// HeadObject
-		return auth.GetObjectAction, nil
+		//TODO: Still not clear what kind of error should be returned in this case(ListBuckets)
+		return "", auth.PermissionRead, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 
 	queryArgs := ctx.Context().QueryArgs()
 
-	if isBucketAction {
-		if queryArgs.Has("tagging") {
-			// GetBucketTagging
-			return auth.GetBucketTaggingAction, nil
-		} else if queryArgs.Has("ownershipControls") {
-			//FIXME: fix the error type
-			// GetBucketOwnershipControls
-			return auth.GetBucketOwnershipControlsAction, s3err.GetAPIError(s3err.ErrAccessDenied)
-		} else if queryArgs.Has("versioning") {
-			// GetBucketVersioning
-			return auth.GetBucketVersioningAction, nil
-		} else if queryArgs.Has("policy") {
-			// GetBucketPolicy
-			return auth.GetBucketPolicyAction, s3err.GetAPIError(s3err.ErrAccessDenied)
-		} else if queryArgs.Has("cors") {
-			// GetBucketCors
-			return auth.GetBucketCorsAction, nil
-		} else if queryArgs.Has("versions") {
-			// ListObjectVersions
-			return auth.GetObjectVersionAction, nil
-		} else if queryArgs.Has("object-lock") {
-			// GetObjectLockConfiguration
-			return auth.GetBucketObjectLockConfigurationAction, nil
-		} else if queryArgs.Has("acl") {
-			// GetBucketAcl
-			return auth.GetBucketAclAction, nil
-		} else if queryArgs.Has("uploads") {
-			// ListMultipartUploads
-			return auth.ListBucketMultipartUploadsAction, nil
-		} else if queryArgs.GetUintOrZero("list-type") == 2 {
-			// ListObjectsV2
-			return auth.ListBucketAction, nil
+	switch ctx.Method() {
+	case fiber.MethodPatch:
+		// Admin apis should always be protected
+		return "", "", s3err.GetAPIError(s3err.ErrAccessDenied)
+	case fiber.MethodHead:
+		// HeadBucket
+		if isBucketAction {
+			return auth.ListBucketAction, auth.PermissionRead, nil
 		}
-		// All the other requests are considerd as ListObjects in the router
+
+		// HeadObject
+		return auth.GetObjectAction, auth.PermissionRead, nil
+	case fiber.MethodGet:
+		if isBucketAction {
+			if queryArgs.Has("tagging") {
+				// GetBucketTagging
+				return auth.GetBucketTaggingAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("ownershipControls") {
+				// GetBucketOwnershipControls
+				return auth.GetBucketOwnershipControlsAction, auth.PermissionRead, s3err.GetAPIError(s3err.ErrAnonymousGetBucketOwnership)
+			} else if queryArgs.Has("versioning") {
+				// GetBucketVersioning
+				return auth.GetBucketVersioningAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("policy") {
+				// GetBucketPolicy
+				return auth.GetBucketPolicyAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("cors") {
+				// GetBucketCors
+				return auth.GetBucketCorsAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("versions") {
+				// ListObjectVersions
+				return auth.GetObjectVersionAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("object-lock") {
+				// GetObjectLockConfiguration
+				return auth.GetBucketObjectLockConfigurationAction, auth.PermissionReadAcp, nil
+			} else if queryArgs.Has("acl") {
+				// GetBucketAcl
+				return auth.GetBucketAclAction, auth.PermissionRead, nil
+			} else if queryArgs.Has("uploads") {
+				// ListMultipartUploads
+				return auth.ListBucketMultipartUploadsAction, auth.PermissionRead, nil
+			} else if queryArgs.GetUintOrZero("list-type") == 2 {
+				// ListObjectsV2
+				return auth.ListBucketAction, auth.PermissionRead, nil
+			}
+			// All the other requests are considerd as ListObjects in the router
+			// no matter what kind of query arguments are provided apart from the ones above
+
+			return auth.ListBucketAction, auth.PermissionRead, nil
+		}
+
+		if queryArgs.Has("tagging") {
+			// GetObjectTagging
+			return auth.GetObjectTaggingAction, auth.PermissionRead, nil
+		} else if queryArgs.Has("retention") {
+			// GetObjectRetention
+			return auth.GetObjectRetentionAction, auth.PermissionRead, nil
+		} else if queryArgs.Has("legal-hold") {
+			// GetObjectLegalHold
+			return auth.GetObjectLegalHoldAction, auth.PermissionReadAcp, nil
+		} else if queryArgs.Has("acl") {
+			// GetObjectAcl
+			return auth.GetObjectAclAction, auth.PermissionRead, nil
+		} else if queryArgs.Has("attributes") {
+			// GetObjectAttributes
+			return auth.GetObjectAttributesAction, auth.PermissionRead, nil
+		} else if queryArgs.Has("uploadId") {
+			// ListParts
+			return auth.ListMultipartUploadPartsAction, auth.PermissionRead, nil
+		}
+
+		// All the other requests are considerd as GetObject in the router
 		// no matter what kind of query arguments are provided apart from the ones above
+		if queryArgs.Has("versionId") {
+			return auth.GetObjectVersionAction, auth.PermissionRead, nil
+		}
+		return auth.GetObjectAction, auth.PermissionRead, nil
+	case fiber.MethodPut:
+		if isBucketAction {
+			if queryArgs.Has("tagging") {
+				// PutBucketTagging
+				return auth.PutBucketTaggingAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("ownershipControls") {
+				// PutBucketOwnershipControls
+				return auth.PutBucketOwnershipControlsAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAnonymousPutBucketOwnership)
+			}
+			if queryArgs.Has("versioning") {
+				// PutBucketVersioning
+				return auth.PutBucketVersioningAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("object-lock") {
+				// PutObjectLockConfiguration
+				return auth.PutBucketObjectLockConfigurationAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("cors") {
+				// PutBucketCors
+				return auth.PutBucketCorsAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("policy") {
+				// PutBucketPolicy
+				return auth.PutBucketPolicyAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("acl") {
+				// PutBucketAcl
+				return auth.PutBucketAclAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAnonymousRequest)
+			}
 
-		return auth.ListBucketAction, nil
-	}
+			// All the other rquestes are considered as 'CreateBucket' in the router
+			return "", "", s3err.GetAPIError(s3err.ErrAnonymousRequest)
+		}
 
-	if queryArgs.Has("tagging") {
-		// GetObjectTagging
-		return auth.GetObjectTaggingAction, nil
-	} else if queryArgs.Has("retention") {
-		// GetObjectRetention
-		return auth.GetObjectRetentionAction, nil
-	} else if queryArgs.Has("legal-hold") {
-		// GetObjectLegalHold
-		return auth.GetObjectLegalHoldAction, nil
-	} else if queryArgs.Has("acl") {
-		// GetObjectAcl
-		return auth.GetObjectAclAction, nil
-	} else if queryArgs.Has("attributes") {
-		// GetObjectAttributes
-		return auth.GetObjectAttributesAction, nil
-	} else if queryArgs.Has("uploadId") {
-		// ListParts
-		return auth.ListMultipartUploadPartsAction, nil
-	}
+		if queryArgs.Has("tagging") {
+			// PutObjectTagging
+			return auth.PutObjectTaggingAction, auth.PermissionWrite, nil
+		}
+		if queryArgs.Has("retention") {
+			// PutObjectRetention
+			return auth.PutObjectRetentionAction, auth.PermissionWrite, nil
+		}
+		if queryArgs.Has("legal-hold") {
+			// PutObjectLegalHold
+			return auth.PutObjectLegalHoldAction, auth.PermissionWrite, nil
+		}
+		if queryArgs.Has("acl") {
+			// PutObjectAcl
+			return auth.PutObjectAclAction, auth.PermissionWriteAcp, s3err.GetAPIError(s3err.ErrAnonymousRequest)
+		}
+		if queryArgs.Has("uploadId") && queryArgs.Has("partNumber") {
+			if ctx.Get("X-Amz-Copy-Source") != "" {
+				// UploadPartCopy
+				//TODO: Add public access check for copy-source
+				return auth.PutObjectAction, auth.PermissionWrite, nil
+			}
 
-	// All the other requests are considerd as GetObject in the router
-	// no matter what kind of query arguments are provided apart from the ones above
-	if queryArgs.Has("versionId") {
-		return auth.GetObjectVersionAction, nil
+			// UploadPart
+			return auth.PutObjectAction, auth.PermissionWrite, nil
+		}
+		if ctx.Get("X-Amz-Copy-Source") != "" {
+			return auth.PutObjectAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAnonymousCopyObject)
+		}
+
+		// All the other requests are considered as 'PutObject' in the router
+		return auth.PutObjectAction, auth.PermissionWrite, nil
+	case fiber.MethodPost:
+		if isBucketAction {
+			// DeleteObjects
+			return auth.DeleteObjectAction, auth.PermissionWrite, nil
+		}
+
+		if queryArgs.Has("restore") {
+			// RestoreObject
+			//TODO: Check the public access for 'RestoreObject'
+			// return 'AccessDenied' for now
+			return auth.RestoreObjectAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAccessDenied)
+		}
+		if queryArgs.Has("select") && ctx.Query("select-type") == "2" {
+			// SelectObjectContent
+			//TODO: Check the public access for 'SelectObjectContent'
+			return auth.GetObjectAction, auth.PermissionRead, nil
+		}
+		if queryArgs.Has("uploadId") {
+			// CompleteMultipartUpload
+			return auth.PutObjectAction, auth.PermissionWrite, nil
+		}
+
+		// All the other requests are considered as 'CreateMultipartUpload' in the router
+		return "", "", s3err.GetAPIError(s3err.ErrAnonymousCreateMp)
+	case fiber.MethodDelete:
+		if isBucketAction {
+			if queryArgs.Has("tagging") {
+				// DeleteBucketTagging
+				return auth.PutBucketTaggingAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("ownershipControls") {
+				// DeleteBucketOwnershipControls
+				return auth.PutBucketOwnershipControlsAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAnonymousPutBucketOwnership)
+			}
+			if queryArgs.Has("policy") {
+				// DeleteBucketPolicy
+				return auth.PutBucketPolicyAction, auth.PermissionWrite, nil
+			}
+			if queryArgs.Has("cors") {
+				// DeleteBucketCors
+				return auth.PutBucketCorsAction, auth.PermissionWrite, nil
+			}
+
+			// All the other requests are considered as 'DeleteBucket' in the router
+			return auth.DeleteBucketAction, auth.PermissionWrite, nil
+		}
+
+		if queryArgs.Has("tagging") {
+			// DeleteObjectTagging
+			return auth.PutObjectTaggingAction, auth.PermissionWrite, nil
+		}
+		if queryArgs.Has("uploadId") {
+			// AbortMultipartUpload
+			return auth.AbortMultipartUploadAction, auth.PermissionWrite, nil
+		}
+		// All the other requests are considered as 'DeleteObject' in the router
+		return auth.DeleteObjectAction, auth.PermissionWrite, nil
+	default:
+		// In no action is detected, return AccessDenied ?
+		return "", "", s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
-	return auth.GetObjectAction, nil
 }
 
 // parsePath extracts the bucket and object names from the path
