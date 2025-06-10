@@ -193,9 +193,9 @@ var publicACLAllowedActions PublicACLAllowedActions = PublicACLAllowedActions{
 	ListBucketAction:                 struct{}{},
 	PutObjectAction:                  struct{}{},
 	ListBucketMultipartUploadsAction: struct{}{},
-	ListMultipartUploadPartsAction:   struct{}{},
 	DeleteObjectAction:               struct{}{},
 	ListBucketVersionsAction:         struct{}{},
+	GetObjectAction:                  struct{}{},
 	GetObjectAttributesAction:        struct{}{},
 	GetObjectAclAction:               struct{}{},
 }

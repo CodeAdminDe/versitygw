@@ -15,7 +15,6 @@
 package controllers
 
 import (
-	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -2193,7 +2192,7 @@ func (c S3ApiController) PutActions(ctx *fiber.Ctx) error {
 		if bodyi != nil {
 			body = bodyi.(io.Reader)
 		} else {
-			body = bytes.NewReader([]byte{})
+			body = ctx.Request().BodyStream()
 		}
 
 		res, err := c.be.UploadPart(ctx.Context(),
@@ -2613,7 +2612,7 @@ func (c S3ApiController) PutActions(ctx *fiber.Ctx) error {
 			})
 	}
 
-	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, []types.ObjectIdentifier{{Key: &keyStart}}, true, c.be)
+	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, []types.ObjectIdentifier{{Key: &keyStart}}, true, IsBucketPublic, c.be)
 	if err != nil {
 		return SendResponse(ctx, err,
 			&MetaOpts{
@@ -2666,7 +2665,7 @@ func (c S3ApiController) PutActions(ctx *fiber.Ctx) error {
 	if bodyi != nil {
 		body = bodyi.(io.Reader)
 	} else {
-		body = bytes.NewReader([]byte{})
+		body = ctx.Request().BodyStream()
 	}
 
 	res, err := c.be.PutObject(ctx.Context(),
@@ -2984,7 +2983,7 @@ func (c S3ApiController) DeleteObjects(ctx *fiber.Ctx) error {
 	// The AWS CLI sends 'True', while Go SDK sends 'true'
 	bypass := strings.EqualFold(bypassHdr, "true")
 
-	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, dObj.Objects, bypass, c.be)
+	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, dObj.Objects, bypass, IsBucketPublic, c.be)
 	if err != nil {
 		return SendResponse(ctx, err,
 			&MetaOpts{
@@ -3141,7 +3140,9 @@ func (c S3ApiController) DeleteActions(ctx *fiber.Ctx) error {
 	// The AWS CLI sends 'True', while Go SDK sends 'true'
 	bypass := strings.EqualFold(bypassHdr, "true")
 
-	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, []types.ObjectIdentifier{{Key: &key, VersionId: &versionId}}, bypass, c.be)
+	fmt.Println("checking object access: ", bypass, IsBucketPublic)
+
+	err = auth.CheckObjectAccess(ctx.Context(), bucket, acct.Access, []types.ObjectIdentifier{{Key: &key, VersionId: &versionId}}, bypass, IsBucketPublic, c.be)
 	if err != nil {
 		return SendResponse(ctx, err,
 			&MetaOpts{
@@ -3931,6 +3932,7 @@ func SendResponse(ctx *fiber.Ctx, err error, l *MetaOpts) error {
 			ctx.Status(apierr.HTTPStatusCode)
 			return ctx.Send(s3err.GetAPIErrorResponse(apierr, "", "", ""))
 		}
+		fmt.Println(err, "------------")
 
 		debuglogger.Logf("Internal Error, %v", err)
 		ctx.Status(http.StatusInternalServerError)

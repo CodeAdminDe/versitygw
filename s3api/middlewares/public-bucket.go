@@ -15,6 +15,7 @@
 package middlewares
 
 import (
+	"io"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -43,6 +44,25 @@ func AuthorizePublicBucketAccess(be backend.Backend, l s3log.AuditLogger, mm *me
 		err = auth.VerifyPublicAccess(ctx.Context(), be, action, permission, bucket, object)
 		if err != nil {
 			return sendResponse(ctx, err, l, mm)
+		}
+
+		if utils.IsBigDataAction(ctx) {
+			payloadType := ctx.Get("X-Amz-Content-Sha256")
+			if utils.IsUnsignedStreamingPayload(payloadType) {
+				checksumType, err := utils.ExtractChecksumType(ctx)
+				if err != nil {
+					return sendResponse(ctx, err, l, mm)
+				}
+
+				wrapBodyReader(ctx, func(r io.Reader) io.Reader {
+					var cr io.Reader
+					cr, err = utils.NewUnsignedChunkReader(r, checksumType)
+					return cr
+				})
+				if err != nil {
+					return sendResponse(ctx, err, l, mm)
+				}
+			}
 		}
 
 		utils.ContextKeyPublicBucket.Set(ctx, true)
@@ -92,7 +112,7 @@ func detectS3Action(ctx *fiber.Ctx, isBucketAction bool) (auth.Action, auth.Perm
 				return auth.GetBucketCorsAction, auth.PermissionRead, nil
 			} else if queryArgs.Has("versions") {
 				// ListObjectVersions
-				return auth.GetObjectVersionAction, auth.PermissionRead, nil
+				return auth.ListBucketVersionsAction, auth.PermissionRead, nil
 			} else if queryArgs.Has("object-lock") {
 				// GetObjectLockConfiguration
 				return auth.GetBucketObjectLockConfigurationAction, auth.PermissionReadAcp, nil
@@ -193,7 +213,8 @@ func detectS3Action(ctx *fiber.Ctx, isBucketAction bool) (auth.Action, auth.Perm
 			if ctx.Get("X-Amz-Copy-Source") != "" {
 				// UploadPartCopy
 				//TODO: Add public access check for copy-source
-				return auth.PutObjectAction, auth.PermissionWrite, nil
+				// Return AccessDenied for now
+				return auth.PutObjectAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAccessDenied)
 			}
 
 			// UploadPart
@@ -208,19 +229,17 @@ func detectS3Action(ctx *fiber.Ctx, isBucketAction bool) (auth.Action, auth.Perm
 	case fiber.MethodPost:
 		if isBucketAction {
 			// DeleteObjects
-			return auth.DeleteObjectAction, auth.PermissionWrite, nil
+			// FIXME: should be fixed with https://github.com/versity/versitygw/issues/1327
+			// Return AccessDenied for now
+			return auth.DeleteObjectAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAccessDenied)
 		}
 
 		if queryArgs.Has("restore") {
-			// RestoreObject
-			//TODO: Check the public access for 'RestoreObject'
-			// return 'AccessDenied' for now
-			return auth.RestoreObjectAction, auth.PermissionWrite, s3err.GetAPIError(s3err.ErrAccessDenied)
+			return auth.RestoreObjectAction, auth.PermissionWrite, nil
 		}
 		if queryArgs.Has("select") && ctx.Query("select-type") == "2" {
 			// SelectObjectContent
-			//TODO: Check the public access for 'SelectObjectContent'
-			return auth.GetObjectAction, auth.PermissionRead, nil
+			return auth.GetObjectAction, auth.PermissionRead, s3err.GetAPIError(s3err.ErrAnonymousRequest)
 		}
 		if queryArgs.Has("uploadId") {
 			// CompleteMultipartUpload

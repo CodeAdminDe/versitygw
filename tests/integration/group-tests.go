@@ -634,6 +634,11 @@ func TestFullFlow(s *S3Conf) {
 	TestGetObjectLegalHold(s)
 	TestWORMProtection(s)
 	TestAccessControl(s)
+	// FIXME: The tests should pass for azure as well
+	// but this issue should be fixed with https://github.com/versity/versitygw/issues/1336
+	if !s.azureTests {
+		TestPublicBuckets(s)
+	}
 	if s.versioningEnabled {
 		TestVersioning(s)
 	}
@@ -771,6 +776,13 @@ func TestAccessControl(s *S3Conf) {
 	AccessControl_root_PutBucketAcl(s)
 	AccessControl_user_PutBucketAcl_with_policy_access(s)
 	AccessControl_copy_object_with_starting_slash_for_user(s)
+}
+
+func TestPublicBuckets(s *S3Conf) {
+	PublicBucket_default_privet_bucket(s)
+	PublicBucket_public_bucket_policy(s)
+	PublicBucket_public_object_policy(s)
+	PublicBucket_public_acl(s)
 }
 
 func TestVersioning(s *S3Conf) {
@@ -1273,6 +1285,10 @@ func GetIntTests() IntTests {
 		"AccessControl_root_PutBucketAcl":                                         AccessControl_root_PutBucketAcl,
 		"AccessControl_user_PutBucketAcl_with_policy_access":                      AccessControl_user_PutBucketAcl_with_policy_access,
 		"AccessControl_copy_object_with_starting_slash_for_user":                  AccessControl_copy_object_with_starting_slash_for_user,
+		"PublicBucket_default_privet_bucket":                                      PublicBucket_default_privet_bucket,
+		"PublicBucket_public_bucket_policy":                                       PublicBucket_public_bucket_policy,
+		"PublicBucket_public_object_policy":                                       PublicBucket_public_object_policy,
+		"PublicBucket_public_acl":                                                 PublicBucket_public_acl,
 		"PutBucketVersioning_non_existing_bucket":                                 PutBucketVersioning_non_existing_bucket,
 		"PutBucketVersioning_invalid_status":                                      PutBucketVersioning_invalid_status,
 		"PutBucketVersioning_success_enabled":                                     PutBucketVersioning_success_enabled,
